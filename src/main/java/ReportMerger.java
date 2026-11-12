@@ -44,7 +44,7 @@ public final class ReportMerger {
             progress.accept(i * 80 / inputs.size(), inputs.get(i).getFileName().toString());
             documents.add(Files.readString(inputs.get(i), StandardCharsets.UTF_8));
         }
-        String result = mergeText(base, documents).replace("[취합일]", friday().toString());
+        String result = mergeText(base, documents, inputs.stream().map(p -> p.getFileName().toString()).toList()).replace("[취합일]", friday().toString());
         progress.accept(90, "");
         Path temporary = Files.createTempFile(output, ".weekly-", ".tmp");
         try {
@@ -56,19 +56,28 @@ public final class ReportMerger {
         return target;
     }
     public String mergeText(String template, List<String> documents) throws IOException {
+        return mergeText(template, documents, null);
+    }
+    private String mergeText(String template, List<String> documents, List<String> fileNames) throws IOException {
         String result = template.replace("\r\n", "\n").replace("\uFEFF", "");
         for (int section = 0; section < SECTIONS.size(); section++) {
             Region region = region(result, SECTIONS.get(section));
             if (region == null) throw new IOException("템플릿에 필수 영역이 없습니다: " + SECTIONS.get(section));
             List<String> bodies = new ArrayList<>();
-            for (String doc : documents) {
-                String normalized = doc.replace("\r\n", "\n").replace("\uFEFF", "");
+            for (int index = 0; index < documents.size(); index++) {
+                String normalized = documents.get(index).replace("\r\n", "\n").replace("\uFEFF", "");
                 Region r = region(normalized, SECTIONS.get(section));
-                if (r != null) bodies.add(normalized.substring(r.start, r.end));
+                if (r != null) {
+                    String content = normalized.substring(r.start, r.end);
+                    if (section == 3 && fileNames != null && !content.isBlank())
+                        content = teamSection(teamName(fileNames.get(index)), content);
+                    bodies.add(content);
+                }
             }
             String body = result.substring(region.start, region.end);
             if (section == 3) {
                 body = "\n\n" + String.join("\n\n", bodies.stream().map(String::strip).filter(s -> !s.isEmpty()).toList()) + "\n\n";
+                body = numberWorkHeadings(body);
             } else {
                 Table shape = table(body);
                 if (shape == null) throw new IOException("템플릿에 표가 없습니다: " + SECTIONS.get(section));
@@ -108,6 +117,71 @@ public final class ReportMerger {
             result = result.substring(0, region.start) + body + result.substring(region.end);
         }
         return result.stripTrailing() + "\n";
+    }
+    private static String numberWorkHeadings(String body) {
+        List<String> lines = new ArrayList<>(Arrays.asList(body.split("\n", -1)));
+        int number = 1, fenceLength = 0;
+        char fenceChar = 0;
+        Pattern fence = Pattern.compile("^ {0,3}(`{3,}|~{3,})(.*)$");
+        Pattern heading = Pattern.compile("^####[ \\t]+(.+)$");
+        for (int i = 0; i < lines.size(); i++) {
+            String line = lines.get(i);
+            Matcher marker = fence.matcher(line);
+            if (fenceLength > 0) {
+                if (marker.matches() && marker.group(1).charAt(0) == fenceChar
+                        && marker.group(1).length() >= fenceLength && marker.group(2).isBlank())
+                    fenceLength = 0;
+                continue;
+            }
+            if (marker.matches()) {
+                fenceChar = marker.group(1).charAt(0);
+                fenceLength = marker.group(1).length();
+                continue;
+            }
+            Matcher title = heading.matcher(line);
+            if (title.matches()) {
+                String text = title.group(1).replaceFirst("^(?:\\d+\\.)+\\d*\\.?\\s*", "");
+                lines.set(i, "#### 4." + number++ + ". " + text);
+            }
+        }
+        return String.join("\n", lines);
+    }
+    static String teamName(String fileName) throws IOException {
+        String name = fileName.replaceFirst("(?i)\\.md$", "").strip();
+        // The organization prefix ends at 본부; keep spaces within names such as D-Inno 개발팀.
+        int division = name.lastIndexOf("본부");
+        if (division >= 0) name = name.substring(division + "본부".length());
+        else {
+            int meeting = name.lastIndexOf("경영전략회의");
+            if (meeting >= 0) name = name.substring(meeting + "경영전략회의".length());
+            else name = name.replaceFirst("^(?:\\d+[_\\s-]+)?\\d{8}[_\\s-]+", "");
+        }
+        name = name.replaceFirst("^[_\\s-]+", "").strip();
+        if (name.isEmpty() || !name.endsWith("팀"))
+            throw new IOException("파일명에서 팀 이름을 확인할 수 없습니다: " + fileName + " (예: 1_20261113_경영전략회의_SD본부 개발팀.md)");
+        return name;
+    }
+    private static String teamSection(String team, String content) {
+        String body = content.strip();
+        // Replace an existing leading team label with the authoritative filename label.
+        body = body.replaceFirst("^###\\s*\\[[^\\]\\r\\n]+\\]\\s*(?:\\n|$)", "").strip();
+        List<String> lines = new ArrayList<>(Arrays.asList(body.split("\\n", -1)));
+        boolean fenced = false, hasThirdLevel = false;
+        for (String line : lines) {
+            if (line.stripLeading().startsWith("```") || line.stripLeading().startsWith("~~~")) fenced = !fenced;
+            if (!fenced && line.matches("^###\\s+.*")) hasThirdLevel = true;
+        }
+        if (hasThirdLevel) {
+            fenced = false;
+            for (int i = 0; i < lines.size(); i++) {
+                String line = lines.get(i);
+                if (line.stripLeading().startsWith("```") || line.stripLeading().startsWith("~~~")) fenced = !fenced;
+                Matcher heading = HEADING.matcher(line);
+                if (!fenced && heading.matches() && heading.group(1).length() >= 3 && heading.group(1).length() < 6)
+                    lines.set(i, "#" + line);
+            }
+        }
+        return "### [" + team + "]\n\n" + String.join("\n", lines);
     }
     private static String add(String a, String b) {
         if (a.isBlank()) return b;
