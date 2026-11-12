@@ -1,0 +1,25 @@
+# Only development sources, build configuration, and documentation at the root.
+/*
+!/.gitignore
+!/README.md
+!/AGENTS.md
+!/pom.xml
+!/run-windows.bat
+!/src/
+
+# Maven wrapper, if added later.
+!/.mvn/
+!/mvnw
+!/mvnw.cmd
+
+# Generated files and local caches within development directories.
+**/target/
+*.class
+*.log
+*.tmp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+dist/weeklyMergeMD.jar
