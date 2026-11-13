@@ -32,8 +32,16 @@ class ReportMergerTest {
         assertTrue(result.contains("#### 4.1. 신세계푸드 웹 운영유지"));
         assertTrue(result.contains("#### 4.10. KT 디지털 채널 EOS 대응을 위한 분석설계 검증 사업"));
         assertEquals(10, result.lines().filter(l -> l.startsWith("#### ")).count());
+        assertEquals(0, progress.get(0));
+        assertTrue(progress.stream().anyMatch(n -> n > 40 && n < 90), "병합 단계에서도 진행률을 갱신해야 합니다.");
+        for (int i = 1; i < progress.size(); i++) {
+            assertTrue(progress.get(i) >= progress.get(i - 1));
+            assertTrue(progress.get(i) <= 100);
+        }
         assertEquals(100, progress.get(progress.size() - 1));
-        assertThrows(FileAlreadyExistsException.class, () -> merger.merge(inputs, temporary, false, (n, name) -> {}));
+        List<Integer> failedProgress = new ArrayList<>();
+        assertThrows(FileAlreadyExistsException.class, () -> merger.merge(inputs, temporary, false, (n, name) -> failedProgress.add(n)));
+        assertFalse(failedProgress.contains(100), "저장 실패 시 완료로 표시하면 안 됩니다.");
         assertEquals(result, Files.readString(output));
         assertEquals(output, merger.merge(inputs, temporary, true, (n, name) -> {}));
     }

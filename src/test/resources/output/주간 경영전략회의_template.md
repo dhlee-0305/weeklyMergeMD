@@ -1,6 +1,6 @@
 # 주간 경영전략회의
 
-<p align="right">IT서비스부문 / [취합일]</p>
+<p align="right">IT서비스부문 / [병합일]</p>
 
 
 

@@ -35,16 +35,18 @@ public final class ReportMerger {
         }
     }
     public Path merge(List<Path> inputs, Path output, boolean overwrite, BiConsumer<Integer, String> progress) throws IOException {
-        if (inputs.isEmpty()) throw new IOException("취합할 원본 Markdown 파일이 없습니다.");
+        if (inputs.isEmpty()) throw new IOException("병합할 원본 Markdown 파일이 없습니다.");
         if (!Files.isDirectory(output)) throw new IOException("출력 폴더가 없습니다: " + output);
         Path target = resultPath(output);
         String base = Files.readString(template(output), StandardCharsets.UTF_8);
         List<String> documents = new ArrayList<>();
         for (int i = 0; i < inputs.size(); i++) {
-            progress.accept(i * 80 / inputs.size(), inputs.get(i).getFileName().toString());
+            progress.accept(i * 40 / inputs.size(), inputs.get(i).getFileName().toString());
             documents.add(Files.readString(inputs.get(i), StandardCharsets.UTF_8));
+            progress.accept((i + 1) * 40 / inputs.size(), inputs.get(i).getFileName().toString());
         }
-        String result = mergeText(base, documents, inputs.stream().map(p -> p.getFileName().toString()).toList()).replace("[취합일]", friday().toString());
+        String result = mergeText(base, documents, inputs.stream().map(p -> p.getFileName().toString()).toList(),
+                section -> progress.accept(40 + section * 50 / SECTIONS.size(), "")).replace("[병합일]", friday().toString()).replace("[취합일]", friday().toString());
         progress.accept(90, "");
         Path temporary = Files.createTempFile(output, ".weekly-", ".tmp");
         try {
@@ -59,6 +61,10 @@ public final class ReportMerger {
         return mergeText(template, documents, null);
     }
     private String mergeText(String template, List<String> documents, List<String> fileNames) throws IOException {
+        return mergeText(template, documents, fileNames, section -> {});
+    }
+    private String mergeText(String template, List<String> documents, List<String> fileNames, java.util.function.IntConsumer sectionProgress) throws IOException {
+        sectionProgress.accept(0);
         String result = template.replace("\r\n", "\n").replace("\uFEFF", "");
         for (int section = 0; section < SECTIONS.size(); section++) {
             Region region = region(result, SECTIONS.get(section));
@@ -115,6 +121,7 @@ public final class ReportMerger {
                 body = body.substring(0, shape.start) + rendered + body.substring(shape.end);
             }
             result = result.substring(0, region.start) + body + result.substring(region.end);
+            sectionProgress.accept(section + 1);
         }
         return result.stripTrailing() + "\n";
     }

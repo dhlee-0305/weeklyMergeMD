@@ -63,15 +63,21 @@ public final class WeeklyMergeMDApp {
         boolean overwrite = Files.exists(target);
         if (overwrite && JOptionPane.showConfirmDialog(frame, messages.get("overwrite", target), messages.get("app.title"), JOptionPane.YES_NO_OPTION) != JOptionPane.YES_OPTION) return;
         JDialog dialog = new JDialog(frame, messages.get("progress.title"), true);
-        JProgressBar progress = new JProgressBar(0, 100); progress.setStringPainted(true);
-        JLabel status = new JLabel(" "); JPanel panel = new JPanel(new BorderLayout(8, 8));
+        JProgressBar progress = new JProgressBar(SwingConstants.HORIZONTAL, 0, 100);
+        progress.setStringPainted(true); progress.setValue(0); progress.setString("0%");
+        progress.setPreferredSize(new Dimension(540, 24));
+        progress.getAccessibleContext().setAccessibleName(messages.get("progress.title"));
+        JLabel status = new JLabel(messages.get("progress.prepare")); JPanel panel = new JPanel(new BorderLayout(8, 8));
         panel.setBorder(BorderFactory.createEmptyBorder(16, 16, 16, 16)); panel.add(status, BorderLayout.NORTH); panel.add(progress, BorderLayout.CENTER);
         dialog.setContentPane(panel); dialog.setSize(580, 130); dialog.setLocationRelativeTo(frame); dialog.setDefaultCloseOperation(WindowConstants.DO_NOTHING_ON_CLOSE);
         merge.setEnabled(false); refresh.setEnabled(false);
         new SwingWorker<Path, Void>() {
             @Override protected Path doInBackground() throws Exception {
                 return merger.merge(inputs, config.outputDirectory(), overwrite, (percent, name) -> SwingUtilities.invokeLater(() -> {
-                    progress.setValue(percent); status.setText(name.isEmpty() ? messages.get("progress.write") : messages.get("progress.read", name));
+                    progress.setValue(percent); progress.setString(percent + "%");
+                    status.setText(percent == 100 ? messages.get("progress.complete")
+                            : name.isEmpty() ? messages.get(percent < 90 ? "progress.merge" : "progress.write")
+                            : messages.get("progress.read", name));
                 }));
             }
             @Override protected void done() {
