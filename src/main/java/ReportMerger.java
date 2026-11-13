@@ -91,23 +91,14 @@ public final class ReportMerger {
                 for (String b : bodies) {
                     Table t = table(b);
                     if (t == null) continue;
-                    if (t.header.size() != shape.header.size()) throw new IOException("표 열 수가 다릅니다: " + SECTIONS.get(section));
+                    if (section != 1 && t.header.size() != shape.header.size()) throw new IOException("표 열 수가 다릅니다: " + SECTIONS.get(section));
                     sources.add(t);
                 }
                 List<List<String>> rows = new ArrayList<>();
                 if (section == 1) {
-                    for (List<String> row : shape.rows) {
-                        List<String> blank = new ArrayList<>(Collections.nCopies(shape.header.size(), ""));
-                        blank.set(0, row.get(0)); rows.add(blank);
-                    }
-                    for (Table t : sources) {
-                        if (t.rows.size() != rows.size()) throw new IOException("인력 운용 표의 행 수가 다릅니다.");
-                        for (int r = 0; r < rows.size(); r++) {
-                            if (!t.rows.get(r).get(0).replaceAll("\\s", "").equals(rows.get(r).get(0).replaceAll("\\s", "")))
-                                throw new IOException("인력 운용 표의 행 순서가 다릅니다: " + t.rows.get(r).get(0));
-                            for (int c = 1; c < shape.header.size(); c++) rows.get(r).set(c, add(rows.get(r).get(c), t.rows.get(r).get(c)));
-                        }
-                    }
+                    Table personnel = mergePersonnel(shape, sources);
+                    shape = personnel;
+                    rows.addAll(personnel.rows);
                 } else {
                     for (Table t : sources) for (List<String> source : t.rows) {
                         if (source.stream().allMatch(String::isBlank)) continue;
@@ -124,6 +115,98 @@ public final class ReportMerger {
             sectionProgress.accept(section + 1);
         }
         return result.stripTrailing() + "\n";
+    }
+    private static String label(String text) {
+        return text.replaceAll("[\\s*_]", "");
+    }
+    private static LinkedHashMap<String, Integer> columns(Table table) throws IOException {
+        LinkedHashMap<String, Integer> columns = new LinkedHashMap<>();
+        for (int c = 0; c < table.header.size(); c++) {
+            String key = label(table.header.get(c));
+            if (key.isEmpty() || columns.putIfAbsent(key, c) != null)
+                throw new IOException("인력 운용 표에 비어 있거나 중복된 열 이름이 있습니다: " + table.header.get(c));
+        }
+        return columns;
+    }
+    private static Table mergePersonnel(Table shape, List<Table> sources) throws IOException {
+        List<Table> tables = new ArrayList<>();
+        tables.add(shape); tables.addAll(sources);
+        LinkedHashMap<String, String> headers = new LinkedHashMap<>();
+        LinkedHashMap<String, String> labels = new LinkedHashMap<>();
+        for (Table t : tables) {
+            columns(t); // Reject ambiguous headers before matching columns by name.
+            if (!label(t.header.get(0)).equals(label(shape.header.get(0))))
+                throw new IOException("인력 운용 표의 첫 열 이름이 다릅니다: " + t.header.get(0));
+            for (String header : t.header) headers.putIfAbsent(label(header), header);
+            Set<String> seen = new HashSet<>();
+            for (List<String> row : t.rows) {
+                String key = label(row.get(0));
+                if (key.isEmpty() && row.stream().allMatch(String::isBlank)) continue;
+                if (key.isEmpty() || !seen.add(key))
+                    throw new IOException("인력 운용 표에 비어 있거나 중복된 항목이 있습니다: " + row.get(0));
+                labels.putIfAbsent(key, row.get(0));
+            }
+        }
+        List<String> keys = new ArrayList<>(headers.keySet());
+        List<Integer> counts = new ArrayList<>();
+        for (int c = 1; c < keys.size(); c++) {
+            String key = keys.get(c);
+            if (key.endsWith("직") || key.equals("인원")) counts.add(c);
+        }
+        int totalColumn = keys.indexOf("합계");
+        if (totalColumn >= 0 && counts.isEmpty())
+            throw new IOException("인력 운용 표에 합산할 인원 열이 없습니다.");
+        if (totalColumn >= 0) labels.putIfAbsent("합계", "합계");
+        LinkedHashMap<String, List<String>> merged = new LinkedHashMap<>();
+        for (var entry : labels.entrySet()) {
+            List<String> row = new ArrayList<>(Collections.nCopies(keys.size(), ""));
+            row.set(0, entry.getValue()); merged.put(entry.getKey(), row);
+        }
+        for (Table source : sources) {
+            Map<String, Integer> sourceColumns = columns(source);
+            for (List<String> input : source.rows) {
+                String key = label(input.get(0));
+                if (key.isEmpty()) continue;
+                List<String> row = merged.get(key);
+                for (int c = 1; c < keys.size(); c++) {
+                    Integer sourceColumn = sourceColumns.get(keys.get(c));
+                    if (sourceColumn == null || c == totalColumn || (key.equals("합계") && counts.contains(c))) continue;
+                    String value = input.get(sourceColumn);
+                    if (counts.contains(c)) {
+                        if (!value.isBlank()) row.set(c, number(row.get(c), input.get(0), keys.get(c))
+                                .add(number(value, input.get(0), keys.get(c))).stripTrailingZeros().toPlainString());
+                    } else row.set(c, add(row.get(c), value));
+                }
+            }
+        }
+        for (var entry : merged.entrySet()) {
+            if (entry.getKey().equals("합계") || totalColumn < 0) continue;
+            BigDecimal sum = BigDecimal.ZERO;
+            for (int c : counts) sum = sum.add(number(entry.getValue().get(c), entry.getKey(), keys.get(c)));
+            entry.getValue().set(totalColumn, formatTotal(sum));
+        }
+        List<String> total = merged.remove("합계");
+        if (total != null) {
+            List<Integer> summedColumns = new ArrayList<>(counts);
+            if (totalColumn >= 0) summedColumns.add(totalColumn);
+            for (int c : summedColumns) {
+                BigDecimal sum = BigDecimal.ZERO;
+                for (var entry : merged.entrySet()) sum = sum.add(number(entry.getValue().get(c), entry.getKey(), keys.get(c)));
+                total.set(c, formatTotal(sum));
+            }
+            merged.put("합계", total);
+        }
+        String separator = keys.size() == shape.header.size() ? shape.separator
+                : render(Collections.nCopies(keys.size(), "---"));
+        return new Table(shape.start, shape.end, new ArrayList<>(headers.values()), separator, new ArrayList<>(merged.values()));
+    }
+    private static String formatTotal(BigDecimal value) {
+        return value.signum() == 0 ? "" : value.stripTrailingZeros().toPlainString();
+    }
+    private static BigDecimal number(String value, String row, String column) throws IOException {
+        if (value.isBlank()) return BigDecimal.ZERO;
+        try { return new BigDecimal(value.replace(",", "")); }
+        catch (NumberFormatException e) { throw new IOException("인력 운용 표의 인원은 숫자여야 합니다: " + row + " / " + column + " = " + value, e); }
     }
     private static String numberWorkHeadings(String body) {
         List<String> lines = new ArrayList<>(Arrays.asList(body.split("\n", -1)));

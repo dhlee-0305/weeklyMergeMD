@@ -8,7 +8,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class ReportMergerTest {
     @TempDir Path temporary;
     private final ReportMerger merger = new ReportMerger(Clock.fixed(Instant.parse("2026-11-12T03:00:00Z"), ZoneId.of("Asia/Seoul")));
-    @Test void actualReportsAreMergedAndSourceCellsArePreserved() throws Exception {
+    @Test void actualReportsAreMergedAndPersonnelTotalsAreRecalculated() throws Exception {
         Path fixtures = Path.of("src/test/resources");
         Files.copy(fixtures.resolve("output/" + ReportMerger.ALTERNATE_TEMPLATE), temporary.resolve(ReportMerger.ALTERNATE_TEMPLATE));
         List<Path> inputs = ReportMerger.listReports(fixtures.resolve("reports"));
@@ -20,7 +20,7 @@ class ReportMergerTest {
         assertTrue(result.contains("| 팀장/부서장 | 2 |  | 2 |"));
         assertTrue(result.contains("| PM | 5 | 1 | 6 |"));
         assertTrue(result.contains("| 개발 | 17 | 4 | 21 |"));
-        assertTrue(result.contains("| 합계 | 22 | 12 | 27 |"));
+        assertTrue(result.contains("| 합계 | 24 | 5 | 29 |"));
         assertEquals(2, result.lines().filter(l -> l.contains("| 계약  완료 |")).count());
         assertTrue(result.contains("|  | LGU+/<br /> 메시징플랫폼개발팀 |"));
         assertTrue(result.contains("|  | kt기업사업팀 |"));
@@ -89,9 +89,100 @@ class ReportMergerTest {
         assertTrue(merged.contains("| 회의 | A\\|B |"));
     }
     @Test void refusesMalformedTables() {
-        String source = "## 인력 운용 현황\n| 구분 | 인원 |\n| -- | -- |\n| 개발 | 2 |\n";
+        String source = "## 인력 운용 현황\n| 구분 | 인원 |\n| -- | -- |\n| 개발 | 2 | 잘못된 열 |\n";
         assertThrows(java.io.IOException.class, () -> merger.mergeText(template(), List.of(source)));
         assertThrows(java.io.IOException.class, () -> merger.mergeText("# 빈 템플릿", List.of()));
+    }
+    private String personnelTemplate(String table) {
+        return template().replace("| 구분 | 인원 | 사유 |\n| -- | -- | -- |\n| 개발 | | |", table.strip());
+    }
+    @Test void personnelTotalsIgnoreSourceTotalsAndIncludeNewRowsAndColumns() throws Exception {
+        String shape = personnelTemplate("""
+                | 구분 | 정규직 | 계약직 | 합계 | 증감 | 증감 사유 |
+                | -- | -- | -- | -- | -- | -- |
+                | 개발 | | | | | |
+                | 합계 | 999 | 999 | 999 | | |
+                """);
+        String first = """
+                ## 인력 운용 현황
+                | 구분 | 계약직 | 합계 | 정규직 | 증감 사유 | 증감 |
+                | -- | -- | -- | -- | -- | -- |
+                | 합계 | 틀린 합계 | 999 | 999 | | |
+                | QA | 2 | 888 | 3 | 충원 | 1 |
+                | 개발 | 1 | 777 | 10 | 이동 | -1 |
+                """;
+        String second = """
+                ## 인력 운용 현황
+                | 구분 | 정규직 | 계약직 | 파견직 | 합계 | 증감 | 증감 사유 |
+                | -- | -- | -- | -- | -- | -- | -- |
+                | 개발 | 4 | | 2 | 999 | 2 | 복귀 |
+                | QA | 1 | 3 | | 999 | | |
+                | 보안 | 2 | | 1 | 999 | | |
+                """;
+        String result = merger.mergeText(shape, List.of(first, second));
+        assertTrue(result.contains("| 개발 | 14 | 1 | 17 | 1 | 이동<br />복귀 | 2 |"));
+        assertTrue(result.contains("| QA | 4 | 5 | 9 | 1 | 충원 |  |"));
+        assertTrue(result.contains("| 보안 | 2 |  | 3 |  |  | 1 |"));
+        assertTrue(result.contains("| 합계 | 20 | 6 | 29 |  |  | 3 |"));
+        assertTrue(result.indexOf("\n| 보안 |") < result.indexOf("\n| 합계 |"));
+        assertFalse(result.contains("999"));
+        assertEquals(result, merger.mergeText(shape, List.of(result)));
+    }
+    @Test void personnelTotalsHandleBlankCommaDecimalAndMissingTotalRow() throws Exception {
+        String shape = personnelTemplate("""
+                | 구분 | 합계 | 계약직 | 정규직 |
+                | -- | -- | -- | -- |
+                | 개발 | | | |
+                | 기획 | | | |
+                """);
+        String source = """
+                ## 인력 운용 현황
+                | 구분 | 정규직 | 계약직 |
+                | -- | -- | -- |
+                | 개발 | 1,000 | -2.5 |
+                | 유휴 인력(미투입) | | 2.5 |
+                """;
+        String result = merger.mergeText(shape, List.of(source));
+        assertTrue(result.contains("| 개발 | 997.5 | -2.5 | 1000 |"));
+        assertTrue(result.contains("| 기획 |  |  |  |"));
+        assertTrue(result.contains("| 유휴 인력(미투입) | 2.5 | 2.5 |  |"));
+        assertTrue(result.contains("| 합계 | 1000 |  | 1000 |"));
+    }
+    @Test void zeroTotalsAreBlankForEmptyAndOffsettingCounts() throws Exception {
+        String shape = personnelTemplate("""
+                | 구분 | 정규직 | 계약직 | 합계 |
+                | -- | -- | -- | -- |
+                | 개발 | | | |
+                | 합계 | | | |
+                """);
+        String empty = merger.mergeText(shape, List.of());
+        assertTrue(empty.contains("| 개발 |  |  |  |"));
+        assertTrue(empty.contains("| 합계 |  |  |  |"));
+        String source = """
+                ## 인력 운용 현황
+                | 구분 | 정규직 | 계약직 | 합계 |
+                | -- | -- | -- | -- |
+                | 개발 | 2.5 | -2.5 | 99 |
+                | 기획 | -2.5 | 2.5 | 99 |
+                """;
+        String result = merger.mergeText(shape, List.of(source));
+        assertTrue(result.contains("| 개발 | 2.5 | -2.5 |  |"));
+        assertTrue(result.contains("| 기획 | -2.5 | 2.5 |  |"));
+        assertTrue(result.contains("| 합계 |  |  |  |"));
+    }
+    @Test void personnelRejectsAmbiguousLabelsAndInvalidCounts() {
+        String shape = personnelTemplate("""
+                | 구분 | 정규직 | 계약직 | 합계 |
+                | -- | -- | -- | -- |
+                | 개발 | | | |
+                | 합계 | | | |
+                """);
+        for (String source : List.of(
+                "| 구분 | 정규직 | 계약직 |\n| -- | -- | -- |\n| 개발 | 미정 | |",
+                "| 구분 | 정규직 | 계약직 |\n| -- | -- | -- |\n| 개발 | 1 | |\n| 개 발 | 2 | |",
+                "| 구분 | 정규직 | 정규직 |\n| -- | -- | -- |\n| 개발 | 1 | 2 |")) {
+            assertThrows(java.io.IOException.class, () -> merger.mergeText(shape, List.of("## 인력 운용 현황\n" + source)));
+        }
     }
     @Test void weekendsUseFridayOfSameWeek() {
         ReportMerger sunday = new ReportMerger(Clock.fixed(Instant.parse("2026-11-15T03:00:00Z"), ZoneId.of("Asia/Seoul")));
